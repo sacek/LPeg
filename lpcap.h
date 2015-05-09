@@ -23,6 +23,11 @@ typedef struct Capture {
   byte siz;  /* size of full capture + 1 (0 = not a full capture) */
 } Capture;
 
+typedef struct CaptureStack {
+  int captop;
+  int dyncaptop;
+  int capsize;
+} CaptureStack;
 
 typedef struct CapState {
   Capture *cap;  /* current capture */

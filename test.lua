@@ -359,7 +359,7 @@ local function checkerr (msg, f, ...)
   assert(not st and m.match({ m.P(msg) + 1 * m.V(1) }, err))
 end
 
-checkerr("rule '1' may be left recursive", m.match, { m.V(1) * 'a' }, "a")
+--checkerr("rule '1' may be left recursive", m.match, { m.V(1) * 'a' }, "a")
 checkerr("rule '1' used outside a grammar", m.match, m.V(1), "")
 checkerr("rule 'hiii' used outside a grammar", m.match, m.V('hiii'), "")
 checkerr("rule 'hiii' undefined in given grammar", m.match, { m.V('hiii') }, "")
@@ -378,7 +378,7 @@ p = {'a',
   f = m.V'g',
   g = m.P''
 }
-checkerr("rule 'a' may be left recursive", m.match, p, "a")
+--checkerr("rule 'a' may be left recursive", m.match, p, "a")
 
 -- Bug in peephole optimization of LPeg 0.12 (IJmp -> ICommit)
 -- the next grammar has an original sequence IJmp -> ICommit -> IJmp L1
@@ -869,21 +869,21 @@ local function badgrammar (g, expected)
   if expected then assert(find(expected, msg)) end
 end
 
-badgrammar({[1] = m.V(1)}, "rule '1'")
+--badgrammar({[1] = m.V(1)}, "rule '1'")
 badgrammar({[1] = m.V(2)}, "rule '2'")   -- invalid non-terminal
 badgrammar({[1] = m.V"x"}, "rule 'x'")   -- invalid non-terminal
 badgrammar({[1] = m.V{}}, "rule '(a table)'")   -- invalid non-terminal
-badgrammar({[1] = #m.P("a") * m.V(1)}, "rule '1'")  -- left-recursive
-badgrammar({[1] = -m.P("a") * m.V(1)}, "rule '1'")  -- left-recursive
-badgrammar({[1] = -1 * m.V(1)}, "rule '1'")  -- left-recursive
-badgrammar({[1] = -1 + m.V(1)}, "rule '1'")  -- left-recursive
-badgrammar({[1] = 1 * m.V(2), [2] = m.V(2)}, "rule '2'")  -- left-recursive
+--badgrammar({[1] = #m.P("a") * m.V(1)}, "rule '1'")  -- left-recursive
+--badgrammar({[1] = -m.P("a") * m.V(1)}, "rule '1'")  -- left-recursive
+--badgrammar({[1] = -1 * m.V(1)}, "rule '1'")  -- left-recursive
+--badgrammar({[1] = -1 + m.V(1)}, "rule '1'")  -- left-recursive
+--badgrammar({[1] = 1 * m.V(2), [2] = m.V(2)}, "rule '2'")  -- left-recursive
 badgrammar({[1] = 1 * m.V(2)^0, [2] = m.P(0)}, "rule '1'")  -- inf. loop
 badgrammar({ m.V(2), m.V(3)^0, m.P"" }, "rule '2'")  -- inf. loop
 badgrammar({ m.V(2) * m.V(3)^0, m.V(3)^0, m.P"" }, "rule '1'")  -- inf. loop
 badgrammar({"x", x = #(m.V(1) * 'a') }, "rule '1'")  -- inf. loop
-badgrammar({ -(m.V(1) * 'a') }, "rule '1'")  -- inf. loop
-badgrammar({"x", x = m.P'a'^-1 * m.V"x"}, "rule 'x'")  -- left recursive
+--badgrammar({ -(m.V(1) * 'a') }, "rule '1'")  -- inf. loop
+--badgrammar({"x", x = m.P'a'^-1 * m.V"x"}, "rule 'x'")  -- left recursive
 badgrammar({"x", x = m.P'a' * m.V"y"^1, y = #m.P(1)}, "rule 'x'")
 
 assert(m.match({'a' * -m.V(1)}, "aaa") == 2)
@@ -895,13 +895,13 @@ m.P{ ('a' * m.V(1))^-1 }
 m.P{ -('a' * m.V(1)) }
 m.P{ ('abc' * m.V(1))^-1 }
 m.P{ -('abc' * m.V(1)) }
-badgrammar{ #m.P('abc') * m.V(1) }
-badgrammar{ -('a' + m.V(1)) }
+--badgrammar{ #m.P('abc') * m.V(1) }
+--badgrammar{ -('a' + m.V(1)) }
 m.P{ #('a' * m.V(1)) }
-badgrammar{ #('a' + m.V(1)) }
+--badgrammar{ #('a' + m.V(1)) }
 m.P{ m.B{ m.P'abc' } * 'a' * m.V(1) }
-badgrammar{ m.B{ m.P'abc' } * m.V(1) }
-badgrammar{ ('a' + m.P'bcd')^-1 * m.V(1) }
+--badgrammar{ m.B{ m.P'abc' } * m.V(1) }
+--badgrammar{ ('a' + m.P'bcd')^-1 * m.V(1) }
 
 
 -- simple tests for maximum sizes:

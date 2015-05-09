@@ -394,6 +394,28 @@ static int needfollow (TTree *tree) {
   } 
 }
 
+/*
+** Check whether a pattern tree has left recursion
+*/
+int hasleftrecursion (TTree *tree) {
+ tailcall:
+  switch (tree->tag) {
+    case TCall:
+      return tree->cap;
+    default: {
+      switch (numsiblings[tree->tag]) {
+        case 1:  /* return hasleftrecursion(sib1(tree)); */
+          tree = sib1(tree); goto tailcall;
+        case 2:
+          if (hasleftrecursion(sib1(tree))) return 1;
+          /* else return hasleftrecursion(sib2(tree)); */
+          tree = sib2(tree); goto tailcall;
+        default: assert(numsiblings[tree->tag] == 0); return 0;
+      }
+    }
+  }
+}
+
 /* }====================================================== */
 
 
@@ -475,8 +497,8 @@ static int addinstruction (CompileState *compst, Opcode op, int aux) {
 /*
 ** Add an instruction followed by space for an offset (to be set later)
 */
-static int addoffsetinst (CompileState *compst, Opcode op) {
-  int i = addinstruction(compst, op, 0);  /* instruction */
+static int addoffsetinst (CompileState *compst, Opcode op, int val) {
+  int i = addinstruction(compst, op, val);  /* instruction */
   addinstruction(compst, (Opcode)0, 0);  /* open space for offset */
   assert(op == ITestSet || sizei(&getinstr(compst, i)) == 2);
   return i;
@@ -590,15 +612,15 @@ static int codetestset (CompileState *compst, Charset *cs, int e) {
     int c = 0;
     Opcode op = charsettype(cs->cs, &c);
     switch (op) {
-      case IFail: return addoffsetinst(compst, IJmp);  /* always jump */
-      case IAny: return addoffsetinst(compst, ITestAny);
+      case IFail: return addoffsetinst(compst, IJmp, 0);  /* always jump */
+      case IAny: return addoffsetinst(compst, ITestAny, 0);
       case IChar: {
-        int i = addoffsetinst(compst, ITestChar);
+        int i = addoffsetinst(compst, ITestChar, 0);
         getinstr(compst, i).i.aux = c;
         return i;
       }
       case ISet: {
-        int i = addoffsetinst(compst, ITestSet);
+        int i = addoffsetinst(compst, ITestSet, 0);
         addcharset(compst, cs->cs);
         return i;
       }
@@ -650,6 +672,18 @@ static void codebehind (CompileState *compst, TTree *tree) {
 static void codechoice (CompileState *compst, TTree *p1, TTree *p2, int opt,
                         const Charset *fl) {
   int emptyp2 = (p2->tag == TTrue);
+  if (hasleftrecursion(p1) || hasleftrecursion(p2))
+   {
+    int pcommit;
+    int pchoice = addoffsetinst(compst, IChoice, 0);
+    codegen(compst, p1, emptyp2, NOINST, fullset);
+    pcommit = addoffsetinst(compst, ICommit, 0);
+    jumptohere(compst, pchoice);
+    codegen(compst, p2, opt, NOINST, fl);
+    jumptohere(compst, pcommit);
+  }
+  else
+  {
   Charset cs1, cs2;
   int e1 = getfirst(p1, fullset, &cs1);
   if (headfail(p1) ||
@@ -659,14 +693,14 @@ static void codechoice (CompileState *compst, TTree *p1, TTree *p2, int opt,
     int jmp = NOINST;
     codegen(compst, p1, 0, test, fl);
     if (!emptyp2)
-      jmp = addoffsetinst(compst, IJmp); 
+      jmp = addoffsetinst(compst, IJmp, 0);
     jumptohere(compst, test);
     codegen(compst, p2, opt, NOINST, fl);
     jumptohere(compst, jmp);
   }
   else if (opt && emptyp2) {
     /* p1? == IPartialCommit; p1 */
-    jumptohere(compst, addoffsetinst(compst, IPartialCommit));
+    jumptohere(compst, addoffsetinst(compst, IPartialCommit, 0));
     codegen(compst, p1, 1, NOINST, fullset);
   }
   else {
@@ -674,13 +708,14 @@ static void codechoice (CompileState *compst, TTree *p1, TTree *p2, int opt,
         test(fail(p1)) -> L1; choice L1; <p1>; commit L2; L1: <p2>; L2: */
     int pcommit;
     int test = codetestset(compst, &cs1, e1);
-    int pchoice = addoffsetinst(compst, IChoice);
+    int pchoice = addoffsetinst(compst, IChoice, 0);
     codegen(compst, p1, emptyp2, test, fullset);
-    pcommit = addoffsetinst(compst, ICommit);
+    pcommit = addoffsetinst(compst, ICommit, 0);
     jumptohere(compst, pchoice);
     jumptohere(compst, test);
     codegen(compst, p2, opt, NOINST, fl);
     jumptohere(compst, pcommit);
+  }
   }
 }
 
@@ -699,9 +734,9 @@ static void codeand (CompileState *compst, TTree *tree, int tt) {
   }
   else {  /* default: Choice L1; p1; BackCommit L2; L1: Fail; L2: */
     int pcommit;
-    int pchoice = addoffsetinst(compst, IChoice);
+    int pchoice = addoffsetinst(compst, IChoice, 0);
     codegen(compst, tree, 0, tt, fullset);
-    pcommit = addoffsetinst(compst, IBackCommit);
+    pcommit = addoffsetinst(compst, IBackCommit, 0);
     jumptohere(compst, pchoice);
     addinstruction(compst, IFail, 0);
     jumptohere(compst, pcommit);
@@ -754,13 +789,28 @@ static void coderep (CompileState *compst, TTree *tree, int opt,
     addcharset(compst, st.cs);
   }
   else {
+    if (hasleftrecursion(tree)) {
+    int commit, l2;
+    int pchoice = NOINST;
+    if (opt)
+       jumptohere(compst, addoffsetinst(compst, IPartialCommit, 0));
+    else
+       pchoice = addoffsetinst(compst, IChoice, 0);
+    l2 = gethere(compst);
+    codegen(compst, tree, 0, NOINST, fullset);
+    commit = addoffsetinst(compst, IPartialCommit, 0);
+    jumptothere(compst, commit, l2);
+    jumptohere(compst, pchoice);
+  }
+  else
+  {
     int e1 = getfirst(tree, fullset, &st);
     if (headfail(tree) || (!e1 && cs_disjoint(&st, fl))) {
       /* L1: test (fail(p1)) -> L2; <p>; jmp L1; L2: */
       int jmp;
       int test = codetestset(compst, &st, 0);
       codegen(compst, tree, opt, test, fullset);
-      jmp = addoffsetinst(compst, IJmp);
+      jmp = addoffsetinst(compst, IJmp, 0);
       jumptohere(compst, test);
       jumptothere(compst, jmp, test);
     }
@@ -771,15 +821,16 @@ static void coderep (CompileState *compst, TTree *tree, int opt,
       int test = codetestset(compst, &st, e1);
       int pchoice = NOINST;
       if (opt)
-        jumptohere(compst, addoffsetinst(compst, IPartialCommit));
+        jumptohere(compst, addoffsetinst(compst, IPartialCommit, 0));
       else
-        pchoice = addoffsetinst(compst, IChoice);
+        pchoice = addoffsetinst(compst, IChoice, 0);
       l2 = gethere(compst);
       codegen(compst, tree, 0, NOINST, fullset);
-      commit = addoffsetinst(compst, IPartialCommit);
+      commit = addoffsetinst(compst, IPartialCommit, 0);
       jumptothere(compst, commit, l2);
       jumptohere(compst, pchoice);
       jumptohere(compst, test);
+    }
     }
   }
 }
@@ -793,6 +844,15 @@ static void coderep (CompileState *compst, TTree *tree, int opt,
 ** use the default code (a choice plus a failtwice).
 */
 static void codenot (CompileState *compst, TTree *tree) {
+
+ if (hasleftrecursion(tree)) {
+  int pchoice = addoffsetinst(compst, IChoice, 0);
+  codegen(compst, tree, 0, NOINST, fullset);
+  addinstruction(compst, IFailTwice, 0);
+  jumptohere(compst, pchoice);
+ }
+ else
+ {
   Charset st;
   int e = getfirst(tree, fullset, &st);
   int test = codetestset(compst, &st, e);
@@ -800,12 +860,13 @@ static void codenot (CompileState *compst, TTree *tree) {
     addinstruction(compst, IFail, 0);
   else {
     /* test(fail(p))-> L1; choice L1; <p>; failtwice; L1:  */
-    int pchoice = addoffsetinst(compst, IChoice);
+    int pchoice = addoffsetinst(compst, IChoice, 0);
     codegen(compst, tree, 0, NOINST, fullset);
     addinstruction(compst, IFailTwice, 0);
     jumptohere(compst, pchoice);
   }
   jumptohere(compst, test);
+ }
 }
 
 
@@ -822,7 +883,7 @@ static void correctcalls (CompileState *compst, int *positions,
       int n = code[i].i.key;  /* rule number */
       int rule = positions[n];  /* rule position */
       assert(rule == from || code[rule - 1].i.code == IRet);
-      if (code[finaltarget(code, i + 2)].i.code == IRet)  /* call; ret ? */
+      if (code[i].i.aux == 0 && code[finaltarget(code, i + 2)].i.code == IRet)  /* call; ret ? */
         code[i].i.code = IJmp;  /* tail call */
       else
         code[i].i.code = ICall;
@@ -841,8 +902,8 @@ static void codegrammar (CompileState *compst, TTree *grammar) {
   int positions[MAXRULES];
   int rulenumber = 0;
   TTree *rule;
-  int firstcall = addoffsetinst(compst, ICall);  /* call initial rule */
-  int jumptoend = addoffsetinst(compst, IJmp);  /* jump to the end */
+  int firstcall = addoffsetinst(compst, ICall, sib1(grammar)->lr);  /* call initial rule */
+  int jumptoend = addoffsetinst(compst, IJmp, 0);  /* jump to the end */
   int start = gethere(compst);  /* here starts the initial rule */
   jumptohere(compst, firstcall);
   for (rule = sib1(grammar); rule->tag == TRule; rule = sib2(rule)) {
@@ -857,7 +918,7 @@ static void codegrammar (CompileState *compst, TTree *grammar) {
 
 
 static void codecall (CompileState *compst, TTree *call) {
-  int c = addoffsetinst(compst, IOpenCall);  /* to be corrected later */
+  int c = addoffsetinst(compst, IOpenCall, call->cap);  /* to be corrected later */
   getinstr(compst, c).i.key = sib2(call)->cap;  /* rule number */
   assert(sib2(call)->tag == TRule);
 }

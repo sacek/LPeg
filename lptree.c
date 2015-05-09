@@ -552,12 +552,17 @@ static int lp_choice (lua_State *L) {
     TTree *t = newcharset(L);
     loopset(i, treebuffer(t)[i] = st1.cs[i] | st2.cs[i]);
   }
+  else
+  {
+  if (hasleftrecursion(t1) || hasleftrecursion(t2))
+    newroot2sib(L, TChoice);
   else if (nofail(t1) || t2->tag == TFalse)
     lua_pushvalue(L, 1);  /* true / x => true, x / false => x */
   else if (t1->tag == TFalse)
     lua_pushvalue(L, 2);  /* false / x => x */
   else
     newroot2sib(L, TChoice);
+ }
   return 1;
 }
 
@@ -690,7 +695,9 @@ static int lp_behind (lua_State *L) {
 ** Create a non-terminal
 */
 static int lp_V (lua_State *L) {
+  int val = luaL_optint(L, 2, 0);
   TTree *tree = newleaf(L, TOpenCall);
+  tree->cap = val;
   luaL_argcheck(L, !lua_isnoneornil(L, 1), 1, "non-nil value expected");
   tree->key = addtonewktable(L, 0, 1);
   return 1;
@@ -935,6 +942,7 @@ static void buildgrammar (lua_State *L, TTree *grammar, int frule, int n) {
     nd->tag = TRule;
     nd->key = 0;
     nd->cap = i;  /* rule number */
+    nd->lr = 0;
     nd->u.ps = rulesize + 1;  /* point to next rule */
     memcpy(sib1(nd), rn, rulesize * sizeof(TTree));  /* copy rule */
     mergektable(L, ridx, sib1(nd));  /* merge its ktable into new one */
@@ -972,8 +980,9 @@ static int verifyerror (lua_State *L, int *passed, int npassed) {
   for (i = npassed - 1; i >= 0; i--) {  /* search for a repetition */
     for (j = i - 1; j >= 0; j--) {
       if (passed[i] == passed[j]) {
-        lua_rawgeti(L, -1, passed[i]);  /* get rule's key */
-        return luaL_error(L, "rule '%s' may be left recursive", val2str(L, -1));
+//      lua_rawgeti(L, -1, passed[i]);  /* get rule's key */
+//      return luaL_error(L, "rule '%s' may be left recursive", val2str(L, -1));
+        return PEleftrecursion;
       }
     }
   }
@@ -1006,12 +1015,15 @@ static int verifyrule (lua_State *L, TTree *tree, int *passed, int npassed,
       /* return verifyrule(L, sib2(tree), passed, npassed); */
       tree = sib2(tree); goto tailcall;
     case TSeq:  /* only check 2nd child if first is nullable */
-      if (!verifyrule(L, sib1(tree), passed, npassed, 0))
-        return nullable;
+      switch (verifyrule(L, sib1(tree), passed, npassed, 0)) {
+        case 0: return nullable;
+        case PEleftrecursion: return PEleftrecursion;
       /* else return verifyrule(L, sib2(tree), passed, npassed); */
+      }
       tree = sib2(tree); goto tailcall;
     case TChoice:  /* must check both children */
       nullable = verifyrule(L, sib1(tree), passed, npassed, nullable);
+      if (nullable == PEleftrecursion) return PEleftrecursion;
       /* return verifyrule(L, sib2(tree), passed, npassed, nullable); */
       tree = sib2(tree); goto tailcall;
     case TRule:
@@ -1028,6 +1040,24 @@ static int verifyrule (lua_State *L, TTree *tree, int *passed, int npassed,
   }
 }
 
+/*
+**
+**
+**
+*/
+static void findleftrecursivecalls (TTree *tree) {
+ tailcall:
+  if (tree->tag == TCall && sib2(tree)->lr && !tree->cap)
+   tree->cap = 1; //Call may be left recursive
+  switch (numsiblings[tree->tag]) {
+    case 1:  /* findleftrecursivecalls(sib1(tree)); */
+      tree = sib1(tree); goto tailcall;
+    case 2:
+      findleftrecursivecalls(sib1(tree));
+      tree = sib2(tree); goto tailcall;  /* findleftrecursivecalls(sib2(tree)); */
+    default: assert(numsiblings[tree->tag] == 0); break;
+  }
+}
 
 static void verifygrammar (lua_State *L, TTree *grammar) {
   int passed[MAXRULES];
@@ -1035,12 +1065,13 @@ static void verifygrammar (lua_State *L, TTree *grammar) {
   /* check left-recursive rules */
   for (rule = sib1(grammar); rule->tag == TRule; rule = sib2(rule)) {
     if (rule->key == 0) continue;  /* unused rule */
-    verifyrule(L, sib1(rule), passed, 0, 0);
+    rule->lr = verifyrule(L, sib1(rule), passed, 0, 0) == PEleftrecursion ? 1 : 0;
   }
   assert(rule->tag == TTrue);
   /* check infinite loops inside rules */
   for (rule = sib1(grammar); rule->tag == TRule; rule = sib2(rule)) {
     if (rule->key == 0) continue;  /* unused rule */
+    findleftrecursivecalls(sib1(rule));
     if (checkloops(sib1(rule))) {
       lua_rawgeti(L, -1, rule->key);  /* get rule's key */
       luaL_error(L, "empty loop in rule '%s'", val2str(L, -1));

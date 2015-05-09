@@ -65,6 +65,8 @@
 /* initial size for capture's list */
 #define INITCAPSIZE	32
 
+/* initial size for capture stack's list */
+#define INITCAPSTACKSIZE	32
 
 /* index, on Lua stack, for subject */
 #define SUBJIDX		2
@@ -81,7 +83,17 @@
 /* index, on Lua stack, for backtracking stack */
 #define stackidx(ptop)	((ptop) + 4)
 
+/* index, on Lua stack, for lambda */
+#define lambdaidx(ptop)	((ptop) + 5)
 
+/* index, on Lua stack, for captures array */
+#define caplistsidx(ptop)	((ptop) + 6)
+
+/* index, on Lua stack, for captures stack */
+#define capliststackidx(ptop)	((ptop) + 7)
+
+/* index, on Lua stack, for dyn captures stack */
+#define dyncaplistidx(ptop)	((ptop) + 8)
 
 typedef unsigned char byte;
 
