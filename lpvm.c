@@ -169,6 +169,127 @@ static int removedyncap (lua_State *L, Capture *capture,
   return top - id + 1;  /* number of values removed */
 }
 
+/*
+**
+*/
+static Capture* getcapturesfromstack (lua_State *L, int ndyncap, int newdyncap, int capstacktop, int ptop) {
+  int i;
+  Capture * capture;
+  lua_rawgeti(L,caplistsidx(ptop), capstacktop);
+  capture = ((Capture *)lua_touserdata(L, -1));
+  lua_replace(L, caplistidx(ptop));
+  lua_pop(L,ndyncap);
+  lua_rawgeti(L,dyncaplistidx(ptop), capstacktop);
+  for (i = 1; i <= newdyncap; i++)
+   {
+    lua_rawgeti(L, -1, i);
+    lua_insert(L,-2);
+   }
+  lua_pop(L,1);
+  return capture;
+}
+
+/*
+**
+*/
+static CaptureStack * addcapturestostack (lua_State *L, CaptureStack *capstack, int ndyncap, int captop, int *capstacksize, int *capstacktop, int ptop) {
+   int i;
+   capstack->captop = captop;
+   capstack->dyncaptop = ndyncap;
+   lua_newtable(L);
+   for (i = 1; i <= ndyncap; i++)
+    {
+     lua_pushvalue(L,i - ndyncap - 2);
+     lua_rawseti(L, -2, i);
+    }
+    lua_rawseti(L, dyncaplistidx(ptop), *capstacktop);
+    if (*capstacktop + 1 >= *capstacksize) {
+      capstack = doublecapstack(L, *capstacktop,  ptop) + *capstacktop - 1;
+      *capstacksize = 2 * *capstacktop;
+    }
+    (*capstacktop)++;
+    capstack++;
+    return capstack;
+}
+
+
+
+/*
+**
+*/
+static int removecapturesfromstack (lua_State *L, int capstacktop, int ptop) {
+  lua_pushnil(L);
+  lua_rawseti(L,caplistsidx(ptop),capstacktop);
+  lua_pushnil(L);
+  lua_rawseti(L,dyncaplistidx(ptop),capstacktop);
+  return --capstacktop;
+}
+
+/*
+**
+*/
+static void putcapturestolambda (lua_State *L, int ndyncap, int captop, int capstacktop, int ptop) {
+  int i;
+  lua_pushvalue(L, caplistidx(ptop));
+  lua_setfield(L,-2,"commitcap");
+  lua_pushinteger(L, captop);
+  lua_setfield(L,-2,"commitcaptop");
+  lua_newtable(L);
+  for (i = 1; i <= ndyncap; i++)
+    {
+     lua_pushvalue(L,i - ndyncap - 1 - 2);
+     lua_rawseti(L,-2,i);
+    }
+  lua_pushinteger(L, ndyncap);
+  lua_setfield(L,-3,"commitdyncapcount");
+  lua_setfield(L,-2,"commitdyncap");
+}
+
+/*
+**
+*/
+static Capture * addcapturesfromlambda (lua_State *L, int lambdaindex, Capture * capture,  int *ndyncap, int *captop, int *capsize, int capstacktop, int ptop) {
+  int i, commitdyncapcount, commitcaptop;
+  Capture * commitcapture;
+  lua_pushinteger(L, lambdaindex);
+  lua_gettable(L, lambdaidx(ptop));
+  lua_getfield(L,-1,"commitcap");
+  commitcapture = ((Capture *)lua_touserdata(L, -1));
+  lua_getfield(L,-2,"commitcaptop");
+  commitcaptop = lua_tointeger(L, -1);
+  lua_getfield(L,-3,"commitdyncapcount");
+  commitdyncapcount = lua_tointeger(L, -1);
+  lua_getfield(L,-4,"commitdyncap");
+  for (i = 1; i <= commitdyncapcount; i++)
+   {
+    lua_rawgeti(L, -1, i);
+    lua_insert(L,-6);
+   }
+  lua_pop(L,5);
+  for (i = 0; i < commitcaptop; i++)
+    if (commitcapture[i].kind == Cruntime)
+      commitcapture[i].idx += *ndyncap;
+  *ndyncap += commitdyncapcount;
+  if (commitcaptop > 0) {
+    if (*captop + commitcaptop >= *capsize) {
+      capture = doublecap(L, capture, *captop + commitcaptop, ptop, capstacktop);
+      *capsize = 2 * (*captop + commitcaptop);
+    }
+    memcpy(capture + *captop, commitcapture, commitcaptop * sizeof(Capture));
+    *captop += commitcaptop;
+  }
+  return capture;
+}
+
+
+/*
+**
+*/
+static void clearlambdaitem (lua_State *L, int index, int ptop) {
+  lua_pushinteger(L, index);
+  lua_pushnil(L);
+  lua_settable(L, lambdaidx(ptop));
+}
 
 /*
 ** Opcode interpreter
@@ -228,7 +349,6 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
         {
          const char* X = (stack - 1)->X;
          if (X == (char*)LRFAIL || s > X) { // rule lvar.1 inc.1
-            int i;
            (stack - 1)->X = s;
             p = (stack - 1)->pA;
             s = (stack - 1)->s;
@@ -237,19 +357,7 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
             lua_gettable(L, lambdaidx(ptop));
             lua_pushinteger(L,(stack - 1)->X == (char*)LRFAIL ? LRFAIL : (stack - 1)->X - o);
             lua_setfield(L,-2,"X");
-            lua_pushvalue(L, caplistidx(ptop));
-            lua_setfield(L,-2,"commitcap");
-            lua_pushinteger(L, captop);
-            lua_setfield(L,-2,"commitcaptop");
-            lua_newtable(L);
-            for (i = 1; i <= ndyncap; i++)
-             {
-              lua_pushvalue(L,i - ndyncap - 1 - 2);
-              lua_rawseti(L,-2,i);
-             }
-            lua_pushinteger(L, ndyncap);
-            lua_setfield(L,-3,"commitdyncapcount");
-            lua_setfield(L,-2,"commitdyncap");
+            putcapturestolambda (L, ndyncap, captop, capstacktop, ptop);
             lua_pop(L,1);
             if (ndyncap > 0)
               lua_pop(L, ndyncap);
@@ -262,61 +370,20 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
             capstack->dyncaptop = ndyncap;
         }
          else {  // rule inc.3
-           Capture * commitcapture;
-           int i, commitcaptop, commitdyncapcount;
+           int newdyncap, lambdaindex;
            stack--;
            p = stack->p;
            s = stack->X;
-           lua_pushnil(L);
-           lua_rawseti(L,caplistsidx(ptop),capstacktop);
-           lua_pushnil(L);
-           lua_rawseti(L,dyncaplistidx(ptop),capstacktop);
-           capstacktop--;
+           capstacktop = removecapturesfromstack (L, capstacktop, ptop);
            capstack--;
-           lua_rawgeti(L,caplistsidx(ptop), capstacktop);
-           capture = ((Capture *)lua_touserdata(L, -1));
-           lua_replace(L, caplistidx(ptop));
            captop = capstack->captop;
            capsize = capstack->capsize;
-           lua_pop(L,ndyncap);
-           ndyncap = capstack->dyncaptop;
-           lua_rawgeti(L,dyncaplistidx(ptop), capstacktop);
-           for (i = 1; i <= ndyncap; i++)
-           {
-            lua_rawgeti(L, -1, i);
-            lua_insert(L,-2);
-           }
-           lua_pop(L,1);
-           lua_pushinteger(L, (stack->pA - op) * maxpointer + (stack->s - o));
-           lua_gettable(L, lambdaidx(ptop));
-           lua_getfield(L,-1,"commitcap");
-           commitcapture = ((Capture *)lua_touserdata(L, -1));
-           lua_getfield(L,-2,"commitcaptop");
-           commitcaptop = lua_tointeger(L, -1);
-           lua_getfield(L,-3,"commitdyncapcount");
-           commitdyncapcount = lua_tointeger(L, -1);
-           lua_getfield(L,-4,"commitdyncap");
-           for (i = 1; i <= commitdyncapcount; i++)
-           {
-            lua_rawgeti(L, -1, i);
-            lua_insert(L,-6);
-           }
-           lua_pop(L,5);
-           for (i = 0; i < commitcaptop; i++)
-            if (commitcapture[i].kind == Cruntime)
-               commitcapture[i].idx += ndyncap;
-           ndyncap += commitdyncapcount;
-           if (commitcaptop > 0) {
-             if (captop + commitcaptop >= capsize) {
-               capture = doublecap(L, capture, captop + commitcaptop, ptop, capstacktop);
-               capsize = 2 * (captop + commitcaptop);
-             }
-             memcpy(capture + captop, commitcapture, commitcaptop * sizeof(Capture));
-             captop += commitcaptop;
-           }
-           lua_pushinteger(L, (stack->pA - op) * maxpointer + (stack->s - o));
-           lua_pushnil(L);
-           lua_settable(L, lambdaidx(ptop));
+           newdyncap = capstack->dyncaptop;
+           capture = getcapturesfromstack (L, ndyncap, newdyncap, capstacktop, ptop);
+           ndyncap = newdyncap;
+           lambdaindex = (stack->pA - op) * maxpointer + (stack->s - o);
+           capture = addcapturesfromlambda (L, lambdaindex, capture, &ndyncap, &captop, &capsize, capstacktop, ptop);
+           clearlambdaitem (L, lambdaindex, ptop);
          }
         }
         continue;
@@ -398,12 +465,11 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
         else
         {
          const Instruction *pA = p + getoffset(p);
-         int index = (pA - op) * maxpointer + (s - o);
-         lua_pushinteger(L, index);
+         int lambdaindex = (pA - op) * maxpointer + (s - o);
+         lua_pushinteger(L, lambdaindex);
          lua_gettable(L, lambdaidx(ptop));
          if (!lua_istable(L,-1)) {  // rule lvar.1 lvar.2
-           int i;
-           lua_pushinteger(L, index);
+           lua_pushinteger(L, lambdaindex);
            lua_newtable(L);
            lua_pushinteger(L, LRFAIL);
            lua_setfield(L,-2,"X");
@@ -411,21 +477,7 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
            lua_setfield(L,-2,"k");
            lua_settable(L, lambdaidx(ptop));
            lua_pop(L, 1);
-           capstack->captop = captop;
-           capstack->dyncaptop = ndyncap;
-           lua_newtable(L);
-           for (i = 1; i <= ndyncap; i++)
-            {
-             lua_pushvalue(L,i - ndyncap - 2);
-             lua_rawseti(L,-2,i);
-            }
-           lua_rawseti(L,dyncaplistidx(ptop),capstacktop);
-           if (capstacktop + 1 >= capstacksize) {
-            capstack = doublecapstack(L, capstacktop,  ptop) + capstacktop - 1;
-            capstacksize = 2 * capstacktop;
-           }
-           capstacktop++;
-           capstack++;
+           capstack = addcapturestostack(L, capstack, ndyncap, captop, &capstacksize, &capstacktop, ptop);
            if (ndyncap > 0)
              lua_pop(L, ndyncap);
            ndyncap = 0;
@@ -445,46 +497,17 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
           }
           else
           {
-           int i, X_X, X_k, commitdyncapcount;
-           Capture * commitcapture;
-           int commitcaptop;
+           int X_X, X_k;
            lua_getfield(L, -1, "X");
            X_X = lua_tointeger(L,-1);
            lua_getfield(L, -2, "k");
            X_k = lua_tointeger(L,-1);
-           lua_pop(L, 2);
+           lua_pop(L, 3);
            if (X_X == LRFAIL || k < X_k) // rule lvar.3 lvar.5
-           {
-            lua_pop(L, 1);
             goto fail;
-           }
            else // rule  lvar.4
             {
-             lua_getfield(L,-1,"commitcap");
-             commitcapture = ((Capture *)lua_touserdata(L, -1));
-             lua_getfield(L,-2,"commitcaptop");
-             commitcaptop = lua_tointeger(L, -1);
-             lua_getfield(L,-3,"commitdyncapcount");
-             commitdyncapcount = lua_tointeger(L, -1);
-             lua_getfield(L,-4,"commitdyncap");
-             for (i = 1; i <= commitdyncapcount; i++)
-              {
-               lua_rawgeti(L, -1, i);
-               lua_insert(L,-6);
-              }
-             lua_pop(L,5);
-             for (i = 0; i < commitcaptop; i++)
-               if (commitcapture[i].kind == Cruntime)
-                  commitcapture[i].idx += ndyncap;
-             ndyncap += commitdyncapcount;
-             if (commitcaptop > 0) {
-               if (captop + commitcaptop >= capsize) {
-                capture = doublecap(L, capture, captop + commitcaptop, ptop, capstacktop);
-                capsize = 2 * (captop + commitcaptop);
-               }
-               memcpy(capture + captop, commitcapture, commitcaptop * sizeof(Capture));
-               captop += commitcaptop;
-             }
+             capture = addcapturesfromlambda (L, lambdaindex, capture, &ndyncap, &captop, &capsize, capstacktop, ptop);
              p += 2;
              s = o + X_X;
             }
@@ -519,35 +542,20 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
       case IFail:
       fail: { /* pattern failed: try to backtrack */
         const char* X;
+        int newdyncap;
         do {  /* remove pending calls */
           assert(stack > getstackbase(L, ptop));
           s = (--stack)->s;
           X = stack->X;
           if (X == (char*)LRFAIL) { // rule lvar.2 rest
-            int i;
-            lua_pushnil(L);
-            lua_rawseti(L,caplistsidx(ptop),capstacktop);
-            lua_pushnil(L);
-            lua_rawseti(L,dyncaplistidx(ptop),capstacktop);
-            capstacktop--;
+            capstacktop = removecapturesfromstack (L, capstacktop, ptop);
             capstack--;
-            lua_rawgeti(L,caplistsidx(ptop), capstacktop);
-            capture = ((Capture *)lua_touserdata(L, -1));
-            lua_replace(L, caplistidx(ptop));
             captop = capstack->captop;
             capsize = capstack->capsize;
-            lua_pop(L,ndyncap);
-            ndyncap = capstack->dyncaptop;
-            lua_rawgeti(L,dyncaplistidx(ptop), capstacktop);
-            for (i = 1; i <= ndyncap; i++)
-             {
-              lua_rawgeti(L, -1, i);
-              lua_insert(L,-2);
-             }
-            lua_pop(L,1);
-            lua_pushinteger(L, (stack->pA - op) * maxpointer + (s - o));
-            lua_pushnil(L);
-            lua_settable(L,lambdaidx(ptop));
+            newdyncap = capstack->dyncaptop;
+            capture = getcapturesfromstack (L, ndyncap, newdyncap, capstacktop, ptop);
+            ndyncap = newdyncap;
+            clearlambdaitem (L, (stack->pA - op) * maxpointer + (s - o), ptop);
           }
         } while (s == NULL || X == (char*)LRFAIL);
 
@@ -556,59 +564,18 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
         p = stack->p;
         if (X) // rule inc.2
         {
-         Capture * commitcapture;
-         int i,commitcaptop, commitdyncapcount;
+         int lambdaindex;
          s = X;
-         lua_pushnil(L);
-         lua_rawseti(L,caplistsidx(ptop),capstacktop);
-         lua_pushnil(L);
-         lua_rawseti(L,dyncaplistidx(ptop),capstacktop);
-         capstacktop--;
+         capstacktop = removecapturesfromstack (L, capstacktop, ptop);
          capstack--;
-         lua_rawgeti(L,caplistsidx(ptop), capstacktop);
-         capture = ((Capture *)lua_touserdata(L, -1));
-         lua_replace(L, caplistidx(ptop));
          captop = capstack->captop;
          capsize = capstack->capsize;
-         lua_pop(L,ndyncap);
-         ndyncap = capstack->dyncaptop;
-         lua_rawgeti(L,dyncaplistidx(ptop), capstacktop);
-         for (i = 1; i <= ndyncap; i++)
-          {
-           lua_rawgeti(L, -1, i);
-           lua_insert(L,-2);
-          }
-         lua_pop(L,1);
-         lua_pushinteger(L, (stack->pA - op) * maxpointer + (stack->s - o));
-         lua_gettable(L, lambdaidx(ptop));
-         lua_getfield(L,-1,"commitcap");
-         commitcapture = ((Capture *)lua_touserdata(L, -1));
-         lua_getfield(L,-2,"commitcaptop");
-         commitcaptop = lua_tointeger(L, -1);
-         lua_getfield(L,-3,"commitdyncapcount");
-         commitdyncapcount = lua_tointeger(L, -1);
-         lua_getfield(L,-4,"commitdyncap");
-         for (i = 1; i <= commitdyncapcount; i++)
-          {
-           lua_rawgeti(L, -1, i);
-           lua_insert(L,-6);
-          }
-        lua_pop(L,5);
-        for (i = 0; i < commitcaptop; i++)
-          if (commitcapture[i].kind == Cruntime)
-            commitcapture[i].idx += ndyncap;
-        ndyncap += commitdyncapcount;
-        if (commitcaptop > 0) {
-           if (captop + commitcaptop >= capsize) {
-             capture = doublecap(L, capture, captop + commitcaptop, ptop, capstacktop);
-             capsize = 2 * (captop + commitcaptop);
-           }
-           memcpy(capture + captop, commitcapture, commitcaptop * sizeof(Capture));
-           captop += commitcaptop;
-         }
-         lua_pushinteger(L, (stack->pA - op) * maxpointer + (stack->s - o));
-         lua_pushnil(L);
-         lua_settable(L,lambdaidx(ptop));
+         newdyncap = capstack->dyncaptop;
+         capture = getcapturesfromstack (L, ndyncap, newdyncap, capstacktop, ptop);
+         ndyncap = newdyncap;
+         lambdaindex = (stack->pA - op) * maxpointer + (stack->s - o);
+         capture = addcapturesfromlambda (L, lambdaindex, capture, &ndyncap, &captop, &capsize, capstacktop, ptop);
+         clearlambdaitem (L, lambdaindex, ptop);
         }
         else
           captop = stack->caplevel;
