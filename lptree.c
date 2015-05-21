@@ -695,7 +695,7 @@ static int lp_behind (lua_State *L) {
 ** Create a non-terminal
 */
 static int lp_V (lua_State *L) {
-  int val = luaL_optint(L, 2, 0);
+  int val = luaL_optinteger(L, 2, 0);
   TTree *tree = newleaf(L, TOpenCall);
   tree->cap = val;
   luaL_argcheck(L, !lua_isnoneornil(L, 1), 1, "non-nil value expected");
