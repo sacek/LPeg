@@ -401,7 +401,7 @@ int hasleftrecursion (TTree *tree) {
  tailcall:
   switch (tree->tag) {
     case TCall:
-      return tree->cap;
+      return tree->lr;
     default: {
       switch (numsiblings[tree->tag]) {
         case 1:  /* return hasleftrecursion(sib1(tree)); */
@@ -918,7 +918,7 @@ static void codegrammar (CompileState *compst, TTree *grammar) {
 
 
 static void codecall (CompileState *compst, TTree *call) {
-  int c = addoffsetinst(compst, IOpenCall, call->cap);  /* to be corrected later */
+  int c = addoffsetinst(compst, IOpenCall, call->lr);  /* to be corrected later */
   getinstr(compst, c).i.key = sib2(call)->cap;  /* rule number */
   assert(sib2(call)->tag == TRule);
 }

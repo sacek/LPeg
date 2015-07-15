@@ -697,7 +697,7 @@ static int lp_behind (lua_State *L) {
 static int lp_V (lua_State *L) {
   int val = luaL_optinteger(L, 2, 0);
   TTree *tree = newleaf(L, TOpenCall);
-  tree->cap = val;
+  tree->lr = val; // left recursion val > 0 with precedence
   luaL_argcheck(L, !lua_isnoneornil(L, 1), 1, "non-nil value expected");
   tree->key = addtonewktable(L, 0, 1);
   return 1;
@@ -1047,8 +1047,8 @@ static int verifyrule (lua_State *L, TTree *tree, int *passed, int npassed,
 */
 static void findleftrecursivecalls (TTree *tree) {
  tailcall:
-  if (tree->tag == TCall && sib2(tree)->lr && !tree->cap)
-   tree->cap = 1; //Call may be left recursive
+  if (tree->tag == TCall && sib2(tree)->lr && !tree->lr)
+   tree->lr = 1; //Call may be left recursive
   switch (numsiblings[tree->tag]) {
     case 1:  /* findleftrecursivecalls(sib1(tree)); */
       tree = sib1(tree); goto tailcall;
