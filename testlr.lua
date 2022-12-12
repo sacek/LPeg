@@ -1,5 +1,11 @@
+print(package.path, package.path)
+package.path = './?.lua;' .. package.path
+package.cpath = './?.so;' .. package.cpath
+
 local lpeg = require"lpeg"
 local re = require"re"
+
+print(lpeg.version)
 
 local m = lpeg
 
@@ -15,8 +21,8 @@ end
 
 print"Tests for LPeg left recursion"
 
-assert(type(m.version()) == "string")
-print("version " .. m.version())
+assert(type(m.version) == "string")
+print("version " .. m.version)
 
 
 --[[
