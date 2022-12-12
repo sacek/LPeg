@@ -93,6 +93,8 @@ Constructions are listed in order of decreasing precedence.
 equivalent to <code>p / defs[name]</code></td></tr>
 <tr><td><code>p =&gt; name</code></td> <td>match-time capture
 equivalent to <code>lpeg.Cmt(p, defs[name])</code></td></tr>
+<tr><td><code>p ~&gt; name</code></td> <td>fold capture
+equivalent to <code>lpeg.Cf(p, defs[name])</code></td></tr>
 <tr><td><code>& p</code></td> <td>and predicate</td></tr>
 <tr><td><code>! p</code></td> <td>not predicate</td></tr>
 <tr><td><code>p1 p2</code></td> <td>concatenation</td></tr>
@@ -296,7 +298,7 @@ it would be useful if each table had
 a <code>tag</code> field telling what non terminal
 that table represents.
 We can add such a tag using
-<a href="lpeg.html/#cap-g">named group captures</a>:
+<a href="lpeg.html#cap-g">named group captures</a>:
 </p>
 <pre class="example">
 x = re.compile[[
@@ -406,7 +408,7 @@ of patterns accepted by <code>re</code>.
 p = [=[
 
 pattern         &lt;- exp !.
-exp             &lt;- S (alternative / grammar)
+exp             &lt;- S (grammar / alternative)
 
 alternative     &lt;- seq ('/' S seq)*
 seq             &lt;- prefix*
@@ -421,6 +423,7 @@ primary         &lt;- '(' exp ')' / string / class / defined
                  / '=' name
                  / '{}'
                  / '{~' exp '~}'
+                 / '{|' exp '|}'
                  / '{' exp '}'
                  / '.'
                  / name S !arrow
@@ -434,7 +437,7 @@ item            &lt;- defined / range / .
 range           &lt;- . '-' [^]]
 
 S               &lt;- (%s / '--' [^%nl]*)*   -- spaces and comments
-name            &lt;- [A-Za-z][A-Za-z0-9_]*
+name            &lt;- [A-Za-z_][A-Za-z0-9_]*
 arrow           &lt;- '&lt;-'
 num             &lt;- [0-9]+
 string          &lt;- '"' [^"]* '"' / "'" [^']* "'"
@@ -450,7 +453,7 @@ print(re.match(p, p))   -- a self description must match itself
 <h2><a name="license">License</a></h2>
 
 <p>
-Copyright &copy; 2008-2010 Lua.org, PUC-Rio.
+Copyright &copy; 2008-2015 Lua.org, PUC-Rio.
 </p>
 <p>
 Permission is hereby granted, free of charge,

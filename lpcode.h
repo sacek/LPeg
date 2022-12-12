@@ -13,7 +13,7 @@
 
 int tocharset (TTree *tree, Charset *cs);
 int checkaux (TTree *tree, int pred);
-int fixedlenx (TTree *tree, int count, int len);
+int fixedlen (TTree *tree);
 int hascaptures (TTree *tree);
 int hasleftrecursion (TTree *tree);
 int lp_gc (lua_State *L);
@@ -36,8 +36,6 @@ int sizei (const Instruction *i);
 ** something
 */
 #define nullable(t)	checkaux(t, PEnullable)
-
-#define fixedlen(t)     fixedlenx(t, 0, 0)
 
 
 

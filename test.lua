@@ -4,8 +4,12 @@
 
 -- require"strict"    -- just to be pedantic
 
+print(package.path, package.cpath)
+package.path = './?.lua;' .. package.path
+package.cpath = './?.so;' .. package.cpath
 local m = require"lpeg"
 
+print(m.version)
 
 -- for general use
 local a, b, c, d, e, f, g, p, t
@@ -48,8 +52,8 @@ end
 
 print"General tests for LPeg library"
 
-assert(type(m.version()) == "string")
-print("version " .. m.version())
+assert(type(m.version) == "string")
+print(m.version)
 assert(m.type("alo") ~= "pattern")
 assert(m.type(io.input) ~= "pattern")
 assert(m.type(m.P"alo") == "pattern")
@@ -200,6 +204,14 @@ do
   }
   assert(pat:match'abc' == 1)
 end
+
+
+-- bug: loop in 'hascaptures'
+do
+  local p = m.C(-m.P{m.P'x' * m.V(1) + m.P'y'})
+  assert(p:match("xxx") == "")
+end
+
 
 
 -- test for small capture boundary
@@ -398,7 +410,7 @@ assert(p:match('abcx') == 5 and p:match('ayzx') == 5 and not p:match'abc')
 
 
 do
-  -- large dynamic Cc
+  print "testing large dynamic Cc"
   local lim = 2^16 - 1
   local c = 0
   local function seq (n) 
@@ -413,6 +425,16 @@ do
   assert(t[lim] == lim)
   checkerr("too many", function () p = p / print end)
   checkerr("too many", seq, lim + 1)
+end
+
+
+do
+  -- nesting of captures too deep
+  local p = m.C(1)
+  for i = 1, 300 do
+    p = m.Ct(p)
+  end
+  checkerr("too deep", p.match, p, "x")
 end
 
 
@@ -516,6 +538,27 @@ assert(m.match(m.Cs((##m.P("a") * 1 + m.P(1)/".")^0), "aloal") == "a..a.")
 assert(m.match(m.Cs((#((#m.P"a")/"") * 1 + m.P(1)/".")^0), "aloal") == "a..a.")
 assert(m.match(m.Cs((- -m.P("a") * 1 + m.P(1)/".")^0), "aloal") == "a..a.")
 assert(m.match(m.Cs((-((-m.P"a")/"") * 1 + m.P(1)/".")^0), "aloal") == "a..a.")
+
+
+-- fixed length
+do
+  -- 'and' predicate using fixed length
+  local p = m.C(#("a" * (m.P("bd") + "cd")) * 2)
+  assert(p:match("acd") == "ac")
+
+  p = #m.P{ "a" * m.V(2), m.P"b" } * 2
+  assert(p:match("abc") == 3)
+
+  p = #(m.P"abc" * m.B"c")
+  assert(p:match("abc") == 1 and not p:match("ab"))
+
+  p = m.P{ "a" * m.V(2), m.P"b"^1 }
+  checkerr("pattern may not have fixed length", m.B, p)
+
+  p = "abc" * (m.P"b"^1 + m.P"a"^0)
+  checkerr("pattern may not have fixed length", m.B, p)
+end
+
 
 p = -m.P'a' * m.Cc(1) + -m.P'b' * m.Cc(2) + -m.P'c' * m.Cc(3)
 assert(p:match('a') == 2 and p:match('') == 1 and p:match('b') == 1)
@@ -817,7 +860,7 @@ s = string.rep('a', l) .. string.rep('b', l) .. string.rep('c', l)
 p = (m.C(m.P'a'^1) * m.C(m.P'b'^1) * m.C(m.P'c'^1)) / '%3%2%1'
 
 assert(p:match(s) == string.rep('c', l) ..
-                     string.rep('b', l) .. 
+                     string.rep('b', l) ..
                      string.rep('a', l))
 
 print"+"
@@ -946,10 +989,10 @@ for i = 1, 10 do
   assert(p:match("aaaaaaaaaaa") == 11 - i + 1)
 end
 
-print"+"
 
 
--- tests for back references
+print "testing back references"
+
 checkerr("back reference 'x' not found", m.match, m.Cb('x'), '')
 checkerr("back reference 'b' not found", m.match, m.Cg(1, 'a') * m.Cb('b'), 'a')
 
@@ -993,6 +1036,17 @@ local function id (s, i, ...)
   return true, ...
 end
 
+do   -- run-time capture in an end predicate (should discard its value)
+  local x = 0
+  function foo (s, i)
+      x = x + 1
+      return true, x
+  end
+
+  local p = #(m.Cmt("", foo) * "xx") * m.Cmt("", foo)
+  assert(p:match("xx") == 2)
+end
+
 assert(m.Cmt(m.Cs((m.Cmt(m.S'abc' / { a = 'x', c = 'y' }, id) +
               m.R'09'^1 /  string.char +
               m.P(1))^0), id):match"acb98+68c" == "xyb\98+\68y")
@@ -1011,8 +1065,8 @@ assert(#x == 500)
 local function id(s, i, x)
   if x == 'a' then return i, 1, 3, 7
   else return nil, 2, 4, 6, 8
-  end   
-end     
+  end
+end
 
 p = ((m.P(id) * 1 + m.Cmt(2, id) * 1  + m.Cmt(1, id) * 1))^0
 assert(table.concat{p:match('abababab')} == string.rep('137', 4))
@@ -1098,6 +1152,32 @@ do
   assert(c == 11)
 end
 
+
+-- Return a match-time capture that returns 'n' captures
+local function manyCmt (n)
+    return m.Cmt("a", function ()
+             local a = {}; for i = 1, n do a[i] = n - i end
+             return true, unpack(a)
+           end)
+end
+
+-- bug in 1.0: failed match-time that used previous match-time results
+do
+  local x
+  local function aux (...) x = #{...}; return false end
+  local res = {m.match(m.Cmt(manyCmt(20), aux) + manyCmt(10), "a")}
+  assert(#res == 10 and res[1] == 9 and res[10] == 0)
+end
+
+
+-- bug in 1.0: problems with math-times returning too many captures
+do
+  local lim = 2^11 - 10
+  local res = {m.match(manyCmt(lim), "a")}
+  assert(#res == lim and res[1] == lim - 1 and res[lim] == 0)
+  checkerr("too many", m.match, manyCmt(2^15), "a")
+end
+
 p = (m.P(function () return true, "a" end) * 'a'
   + m.P(function (s, i) return i, "aa", 20 end) * 'b'
   + m.P(function (s,i) if i <= #s then return i, "aaa" end end) * 1)^0
@@ -1106,9 +1186,85 @@ t = {p:match('abacc')}
 checkeq(t, {'a', 'aa', 20, 'a', 'aaa', 'aaa'})
 
 
+do  print"testing large grammars"
+  local lim = 1000    -- number of rules
+  local t = {}
+
+  for i = 3, lim do
+    t[i] = m.V(i - 1)   -- each rule calls previous one
+  end
+  t[1] = m.V(lim)    -- start on last rule
+  t[2] = m.C("alo")  -- final rule
+
+  local P = m.P(t)   -- build grammar
+  assert(P:match("alo") == "alo")
+
+  t[#t + 1] = m.P("x")   -- one more rule...
+  checkerr("too many rules", m.P, t)
+end
+
+
+print "testing UTF-8 ranges"
+
+do   -- a few typical UTF-8 ranges
+  local p = m.utfR(0x410, 0x44f)^1 / "cyr: %0"
+          + m.utfR(0x4e00, 0x9fff)^1 / "cjk: %0"
+          + m.utfR(0x1F600, 0x1F64F)^1 / "emot: %0"
+          + m.utfR(0, 0x7f)^1 / "ascii: %0"
+          + m.utfR(0, 0x10ffff) / "other: %0"
+
+  p = m.Ct(p^0) * -m.P(1)
+
+  local cyr = "ждюя"
+  local emot = "\240\159\152\128\240\159\153\128"   --  😀🙀
+  local cjk = "专举乸"
+  local ascii = "alo"
+  local last = "\244\143\191\191"                -- U+10FFFF
+
+  local s = cyr .. "—" .. emot .. "—" .. cjk .. "—" .. ascii .. last
+  t = (p:match(s))
+
+  assert(t[1] == "cyr: " .. cyr and t[2] == "other: —" and
+         t[3] == "emot: " .. emot and t[4] == "other: —" and
+         t[5] == "cjk: " .. cjk and t[6] == "other: —" and
+         t[7] == "ascii: " .. ascii and t[8] == "other: " .. last and
+         t[9] == nil)
+end
+
+
+do   -- valid and invalid code points
+  local p = m.utfR(0, 0x10ffff)^0
+  assert(p:match("汉字\128") == #"汉字" + 1)
+  assert(p:match("\244\159\191") == 1)
+  assert(p:match("\244\159\191\191") == 1)
+  assert(p:match("\255") == 1)
+
+   -- basic errors
+  checkerr("empty range", m.utfR, 1, 0)
+  checkerr("invalid code point", m.utfR, 1, 0x10ffff + 1)
+end
+
+
+do  -- back references (fixed width)
+  -- match a byte after a CJK point
+  local p = m.B(m.utfR(0x4e00, 0x9fff)) * m.C(1)
+  p = m.P{ p + m.P(1) * m.V(1) }   -- search for 'p'
+  assert(p:match("ab д 专X x") == "X")
+
+  -- match a byte after a hebrew point
+  local p = m.B(m.utfR(0x5d0, 0x5ea)) * m.C(1)
+  p = m.P(#"ש") * p
+  assert(p:match("שX") == "X")
+
+  checkerr("fixed length", m.B, m.utfR(0, 0x10ffff))
+end
+
+
+
 -------------------------------------------------------------------
 -- Tests for 're' module
 -------------------------------------------------------------------
+print"testing 're' module"
 
 local re = require "re"
 
@@ -1131,6 +1287,9 @@ assert(not match("abbcde", " [b-z] + "))
 assert(match("abb\"de", '"abb"["]"de"') == 7)
 assert(match("abceeef", "'ac' ? 'ab' * 'c' { 'e' * } / 'abceeef' ") == "eee")
 assert(match("abceeef", "'ac'? 'ab'* 'c' { 'f'+ } / 'abceeef' ") == 8)
+
+assert(re.match("aaand", "[a]^2") == 3)
+
 local t = {match("abceefe", "( ( & 'e' {} ) ? . ) * ")}
 checkeq(t, {4, 5, 7})
 local t = {match("abceefe", "((&&'e' {})? .)*")}
@@ -1304,6 +1463,13 @@ x = c:match[[
 checkeq(x, {tag='x', 'hi', {tag = 'b', 'hello'}, 'but',
                      {'totheend'}})
 
+
+-- test for folding captures
+c = re.compile([[
+  S <- (number (%s+ number)*) ~> add
+  number <- %d+ -> tonumber
+]], {tonumber = tonumber, add = function (a,b) return a + b end})
+assert(c:match("3 401 50") == 3 + 401 + 50)
 
 -- tests for look-ahead captures
 x = {re.match("alo", "&(&{.}) !{'b'} {&(...)} &{..} {...} {!.}")}

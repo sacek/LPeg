@@ -21,11 +21,11 @@
 /* number of siblings for each tree */
 const byte numsiblings[] = {
   0, 0, 0,	/* char, set, any */
-  0, 0,		/* true, false */	
+  0, 0, 0,	/* true, false, utf-range */
   1,		/* rep */
   2, 2,		/* seq, choice */
   1, 1,		/* not, and */
-  0, 0, 2, 1,  /* call, opencall, rule, grammar */
+  0, 0, 2, 1, 1,  /* call, opencall, rule, prerule, grammar */
   1,  /* behind */
   1, 1  /* capture, runtime capture */
 };
@@ -64,7 +64,7 @@ static void fixonecall (lua_State *L, int postable, TTree *g, TTree *t) {
   t->tag = TCall;
   t->u.ps = n - (t - g);  /* position relative to node */
   assert(sib2(t)->tag == TRule);
-  sib2(t)->key = t->key;
+  sib2(t)->key = t->key;  /* fix rule's key */
 }
 
 
@@ -680,6 +680,56 @@ static int lp_range (lua_State *L) {
 
 
 /*
+** Fills a tree node with basic information about the UTF-8 code point
+** 'cpu': its value in 'n', its length in 'cap', and its first byte in
+** 'key'
+*/
+static void codeutftree (lua_State *L, TTree *t, lua_Unsigned cpu, int arg) {
+  int len, fb, cp;
+  cp = (int)cpu;
+  if (cp <= 0x7f) {  /* one byte? */
+    len = 1;
+    fb = cp;
+  } else if (cp <= 0x7ff) {
+    len = 2;
+    fb = 0xC0 | (cp >> 6);
+  } else if (cp <= 0xffff) {
+    len = 3;
+    fb = 0xE0 | (cp >> 12);
+  }
+  else {
+    luaL_argcheck(L, cpu <= 0x10ffffu, arg, "invalid code point");
+    len = 4;
+    fb = 0xF0 | (cp >> 18);
+  }
+  t->u.n = cp;
+  t->cap = len;
+  t->key = fb;
+}
+
+
+static int lp_utfr (lua_State *L) {
+  lua_Unsigned from = (lua_Unsigned)luaL_checkinteger(L, 1);
+  lua_Unsigned to = (lua_Unsigned)luaL_checkinteger(L, 2);
+  luaL_argcheck(L, from <= to, 2, "empty range");
+  if (to <= 0x7f) {  /* ascii range? */
+    TTree *tree = newcharset(L);  /* code it as a regular charset */
+    unsigned int f;
+    for (f = (int)from; f <= to; f++)
+      setchar(treebuffer(tree), f);
+  }
+  else {  /* multi-byte utf-8 range */
+    TTree *tree = newtree(L, 2);
+    tree->tag = TUTFR;
+    codeutftree(L, tree, from, 1);
+    sib1(tree)->tag = TXInfo;
+    codeutftree(L, sib1(tree), to, 2);
+  }
+  return 1;
+}
+
+
+/*
 ** Look-behind predicate
 */
 static int lp_behind (lua_State *L) {
@@ -723,6 +773,7 @@ static int capture_aux (lua_State *L, int cap, int labelidx) {
 
 /*
 ** Fill a tree with an empty capture, using an empty (TTrue) sibling.
+** (The 'key' field must be filled by the caller to finish the tree.)
 */
 static TTree *auxemptycap (TTree *tree, int cap) {
   tree->tag = TCapture;
@@ -733,15 +784,17 @@ static TTree *auxemptycap (TTree *tree, int cap) {
 
 
 /*
-** Create a tree for an empty capture
+** Create a tree for an empty capture.
 */
-static TTree *newemptycap (lua_State *L, int cap) {
-  return auxemptycap(newtree(L, 2), cap);
+static TTree *newemptycap (lua_State *L, int cap, int key) {
+  TTree *tree = auxemptycap(newtree(L, 2), cap);
+  tree->key = key;
+  return tree;
 }
 
 
 /*
-** Create a tree for an empty capture with an associated Lua value
+** Create a tree for an empty capture with an associated Lua value.
 */
 static TTree *newemptycapkey (lua_State *L, int cap, int idx) {
   TTree *tree = auxemptycap(newtree(L, 2), cap);
@@ -802,16 +855,15 @@ static int lp_simplecapture (lua_State *L) {
 
 
 static int lp_poscapture (lua_State *L) {
-  newemptycap(L, Cposition);
+  newemptycap(L, Cposition, 0);
   return 1;
 }
 
 
 static int lp_argcapture (lua_State *L) {
   int n = (int)luaL_checkinteger(L, 1);
-  TTree *tree = newemptycap(L, Carg);
-  tree->key = n;
   luaL_argcheck(L, 0 < n && n <= SHRT_MAX, 1, "invalid argument index");
+  newemptycap(L, Carg, n);
   return 1;
 }
 
@@ -911,7 +963,7 @@ static int collectrules (lua_State *L, int arg, int *totalsize) {
   int size;  /* accumulator for total size */
   lua_newtable(L);  /* create position table */
   getfirstrule(L, arg, postab);
-  size = 2 + getsize(L, postab + 2);  /* TGrammar + TRule + rule */
+  size = 3 + getsize(L, postab + 2);  /* TGrammar + TRule + TXInfo + rule */
   lua_pushnil(L);  /* prepare to traverse grammar table */
   while (lua_next(L, arg) != 0) {
     if (lua_tonumber(L, -2) == 1 ||
@@ -925,11 +977,11 @@ static int collectrules (lua_State *L, int arg, int *totalsize) {
     lua_pushvalue(L, -2);  /* push key (to insert into position table) */
     lua_pushinteger(L, size);
     lua_settable(L, postab);
-    size += 1 + getsize(L, -1);  /* update size */
+    size += 2 + getsize(L, -1);  /* add 'TRule + TXInfo + rule' to size */
     lua_pushvalue(L, -2);  /* push key (for next lua_next) */
     n++;
   }
-  *totalsize = size + 1;  /* TTrue to finish list of rules */
+  *totalsize = size + 1;  /* space for 'TTrue' finishing list of rules */
   return n;
 }
 
@@ -941,12 +993,14 @@ static void buildgrammar (lua_State *L, TTree *grammar, int frule, int n) {
     int ridx = frule + 2*i + 1;  /* index of i-th rule */
     int rulesize;
     TTree *rn = gettree(L, ridx, &rulesize);
+    TTree *pr = sib1(nd);  /* points to rule's prerule */
     nd->tag = TRule;
-    nd->key = 0;
-    nd->cap = i;  /* rule number */
+    nd->key = 0;  /* will be fixed when rule is used */
+    pr->tag = TXInfo;
+    pr->u.n = i;  /* rule number */
     nd->lr = 0;
-    nd->u.ps = rulesize + 1;  /* point to next rule */
-    memcpy(sib1(nd), rn, rulesize * sizeof(TTree));  /* copy rule */
+    nd->u.ps = rulesize + 2;  /* point to next rule */
+    memcpy(sib1(pr), rn, rulesize * sizeof(TTree));  /* copy rule */
     mergektable(L, ridx, sib1(nd));  /* merge its ktable into new one */
     nd = sib2(nd);  /* move to next rule */
   }
@@ -977,7 +1031,12 @@ static int checkloops (TTree *tree) {
 }
 
 
-static int verifyerror (lua_State *L, int *passed, int npassed) {
+/*
+** Give appropriate error message for 'verifyrule'. If a rule appears
+** twice in 'passed', there is path from it back to itself without
+** advancing the subject.
+*/
+static int verifyerror (lua_State *L, unsigned short *passed, int npassed) {
   int i, j;
   for (i = npassed - 1; i >= 0; i--) {  /* search for a repetition */
     for (j = i - 1; j >= 0; j--) {
@@ -999,14 +1058,16 @@ static int verifyerror (lua_State *L, int *passed, int npassed) {
 ** is only relevant if the first is nullable.
 ** Parameter 'nb' works as an accumulator, to allow tail calls in
 ** choices. ('nb' true makes function returns true.)
+** Parameter 'passed' is a list of already visited rules, 'npassed'
+** counts the elements in 'passed'.
 ** Assume ktable at the top of the stack.
 */
-static int verifyrule (lua_State *L, TTree *tree, int *passed, int npassed,
-                       int nb) {
+static int verifyrule (lua_State *L, TTree *tree, unsigned short *passed,
+                                     int npassed, int nb) {
  tailcall:
   switch (tree->tag) {
     case TChar: case TSet: case TAny:
-    case TFalse:
+    case TFalse: case TUTFR:
       return nb;  /* cannot pass from here */
     case TTrue:
     case TBehind:  /* look-behind cannot have calls */
@@ -1014,7 +1075,7 @@ static int verifyrule (lua_State *L, TTree *tree, int *passed, int npassed,
     case TNot: case TAnd: case TRep:
       /* return verifyrule(L, sib1(tree), passed, npassed, 1); */
       tree = sib1(tree); nb = 1; goto tailcall;
-    case TCapture: case TRunTime:
+    case TCapture: case TRunTime: case TXInfo:
       /* return verifyrule(L, sib1(tree), passed, npassed, nb); */
       tree = sib1(tree); goto tailcall;
     case TCall:
@@ -1033,10 +1094,10 @@ static int verifyrule (lua_State *L, TTree *tree, int *passed, int npassed,
       /* return verifyrule(L, sib2(tree), passed, npassed, nb); */
       tree = sib2(tree); goto tailcall;
     case TRule:
-      if (npassed >= MAXRULES)
-        return verifyerror(L, passed, npassed);
+      if (npassed >= MAXRULES)  /* too many steps? */
+        return verifyerror(L, passed, npassed);  /* error */
       else {
-        passed[npassed++] = tree->key;
+        passed[npassed++] = tree->key;  /* add rule to path */
         /* return verifyrule(L, sib1(tree), passed, npassed); */
         tree = sib1(tree); goto tailcall;
       }
@@ -1066,7 +1127,7 @@ static void findleftrecursivecalls (TTree *tree) {
 }
 
 static void verifygrammar (lua_State *L, TTree *grammar) {
-  int passed[MAXRULES];
+  unsigned short passed[MAXRULES];
   TTree *rule;
   /* check left-recursive rules */
   for (rule = sib1(grammar); rule->tag == TRule; rule = sib2(rule)) {
@@ -1217,12 +1278,6 @@ static int lp_setmax (lua_State *L) {
 }
 
 
-static int lp_version (lua_State *L) {
-  lua_pushstring(L, VERSION);
-  return 1;
-}
-
-
 static int lp_type (lua_State *L) {
   if (testpattern(L, 1))
     lua_pushliteral(L, "pattern");
@@ -1291,8 +1346,9 @@ static struct luaL_Reg pattreg[] = {
   {"P", lp_P},
   {"S", lp_set},
   {"R", lp_range},
+  {"utfR", lp_utfr},
   {"locale", lp_locale},
-  {"version", lp_version},
+  {"version", NULL},
   {"setmaxstack", lp_setmax},
   {"type", lp_type},
   {NULL, NULL}
@@ -1321,6 +1377,8 @@ int luaopen_lpeg (lua_State *L) {
   luaL_newlib(L, pattreg);
   lua_pushvalue(L, -1);
   lua_setfield(L, -3, "__index");
+  lua_pushliteral(L, "LPeg " VERSION);
+  lua_setfield(L, -2, "version");
   return 1;
 }
 

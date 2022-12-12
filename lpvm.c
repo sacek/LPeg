@@ -29,6 +29,35 @@ static const Instruction giveup = {{IGiveup, 0, 0}};
 
 
 /*
+** Decode one UTF-8 sequence, returning NULL if byte sequence is invalid.
+*/
+static const char *utf8_decode (const char *o, int *val) {
+  static const unsigned int limits[] = {0xFF, 0x7F, 0x7FF, 0xFFFFu};
+  const unsigned char *s = (const unsigned char *)o;
+  unsigned int c = s[0];  /* first byte */
+  unsigned int res = 0;  /* final result */
+  if (c < 0x80)  /* ascii? */
+    res = c;
+  else {
+    int count = 0;  /* to count number of continuation bytes */
+    while (c & 0x40) {  /* still have continuation bytes? */
+      int cc = s[++count];  /* read next byte */
+      if ((cc & 0xC0) != 0x80)  /* not a continuation byte? */
+        return NULL;  /* invalid byte sequence */
+      res = (res << 6) | (cc & 0x3F);  /* add lower 6 bits from cont. byte */
+      c <<= 1;  /* to test next bit */
+    }
+    res |= (c & 0x7F) << (count * 5);  /* add first byte */
+    if (count > 3 || res > 0x10FFFFu || res <= limits[count])
+      return NULL;  /* invalid byte sequence */
+    s += count;  /* skip continuation bytes read */
+  }
+  *val = res;
+  return (const char *)s + 1;  /* +1 to include first byte */
+}
+
+
+/*
 ** {======================================================
 ** Virtual Machine
 ** =======================================================
@@ -48,18 +77,38 @@ typedef struct Stack {
 
 
 /*
-** Double the size of the array of captures
+** Ensures the size of array 'capture' (with size '*capsize' and
+** 'captop' elements being used) is enough to accomodate 'n' extra
+** elements plus one.  (Because several opcodes add stuff to the capture
+** array, it is simpler to ensure the array always has at least one free
+** slot upfront and check its size later.)
 */
-static Capture *doublecap (lua_State *L, Capture *cap, int captop, int ptop, int capstackptr) {
-  Capture *newc;
-  if (captop >= INT_MAX/((int)sizeof(Capture) * 2))
-    luaL_error(L, "too many captures");
-  newc = (Capture *)lua_newuserdata(L, captop * 2 * sizeof(Capture));
-  memcpy(newc, cap, captop * sizeof(Capture));
-  lua_replace(L, caplistidx(ptop));
-  lua_pushvalue(L, caplistidx(ptop)); // update capture base in Capture Stack
-  lua_rawseti(L, caplistsidx(ptop), capstackptr);
-  return newc;
+
+/* new size in number of elements cannot overflow integers, and new
+   size in bytes cannot overflow size_t. */
+#define MAXNEWSIZE  \
+    (((size_t)INT_MAX) <= (~(size_t)0 / sizeof(Capture)) ?  \
+     ((size_t)INT_MAX) : (~(size_t)0 / sizeof(Capture)))
+
+static Capture *growcap (lua_State *L, Capture *capture, int *capsize,
+                                       int captop, int n, int ptop) {
+  if (*capsize - captop > n)
+    return capture;  /* no need to grow array */
+  else {  /* must grow */
+    Capture *newc;
+    unsigned int newsize = captop + n + 1;  /* minimum size needed */
+    if (newsize < MAXNEWSIZE / 2)
+      newsize *= 2;  /* twice that size, if not too big */
+    else if (newsize < (MAXNEWSIZE / 9) * 8)
+      newsize += newsize / 8;  /* else, try 9/8 that size */
+    else
+      luaL_error(L, "too many captures");
+    newc = (Capture *)lua_newuserdata(L, newsize * sizeof(Capture));
+    memcpy(newc, capture, captop * sizeof(Capture));
+    *capsize = newsize;
+    lua_replace(L, caplistidx(ptop));
+    return newc;
+  }
 }
 
 /*
@@ -136,24 +185,24 @@ static int resdyncaptures (lua_State *L, int fr, int curr, int limit) {
 
 
 /*
-** Add capture values returned by a dynamic capture to the capture list
-** 'base', nested inside a group capture. 'fd' indexes the first capture
-** value, 'n' is the number of values (at least 1).
+** Add capture values returned by a dynamic capture to the list
+** 'capture', nested inside a group. 'fd' indexes the first capture
+** value, 'n' is the number of values (at least 1). The open group
+** capture is already in 'capture', before the place for the new entries.
 */
-static void adddyncaptures (const char *s, Capture *base, int n, int fd) {
+static void adddyncaptures (const char *s, Capture *capture, int n, int fd) {
   int i;
-  /* Cgroup capture is already there */
-  assert(base[0].kind == Cgroup && base[0].siz == 0);
-  base[0].idx = 0;  /* make it an anonymous group */
-  for (i = 1; i <= n; i++) {  /* add runtime captures */
-    base[i].kind = Cruntime;
-    base[i].siz = 1;  /* mark it as closed */
-    base[i].idx = fd + i - 1;  /* stack index of capture value */
-    base[i].s = s;
+  assert(capture[-1].kind == Cgroup && capture[-1].siz == 0);
+  capture[-1].idx = 0;  /* make group capture an anonymous group */
+  for (i = 0; i < n; i++) {  /* add runtime captures */
+    capture[i].kind = Cruntime;
+    capture[i].siz = 1;  /* mark it as closed */
+    capture[i].idx = fd + i;  /* stack index of capture value */
+    capture[i].s = s;
   }
-  base[i].kind = Cclose;  /* close group */
-  base[i].siz = 1;
-  base[i].s = s;
+  capture[n].kind = Cclose;  /* close group */
+  capture[n].siz = 1;
+  capture[n].s = s;
 }
 
 
@@ -228,7 +277,7 @@ static int removecapturesfromstack (lua_State *L, int capstacktop, int ptop) {
 /*
 **
 */
-static void putcapturestolambda (lua_State *L, int ndyncap, int captop, int capstacktop, int ptop) {
+static void putcapturestolambda (lua_State *L, int ndyncap, int captop, int ptop) {
   int i;
   lua_pushvalue(L, caplistidx(ptop));
   lua_setfield(L,-2,"commitcap");
@@ -248,7 +297,7 @@ static void putcapturestolambda (lua_State *L, int ndyncap, int captop, int caps
 /*
 **
 */
-static Capture * addcapturesfromlambda (lua_State *L, int lambdaindex, Capture * capture,  int *ndyncap, int *captop, int *capsize, int capstacktop, int ptop) {
+static Capture * addcapturesfromlambda (lua_State *L, int lambdaindex, Capture * capture,  int *ndyncap, int *captop, int *capsize, int ptop) {
   int i, commitdyncapcount, commitcaptop;
   Capture * commitcapture;
   lua_pushinteger(L, lambdaindex);
@@ -272,8 +321,7 @@ static Capture * addcapturesfromlambda (lua_State *L, int lambdaindex, Capture *
   *ndyncap += commitdyncapcount;
   if (commitcaptop > 0) {
     if (*captop + commitcaptop >= *capsize) {
-      capture = doublecap(L, capture, *captop + commitcaptop, ptop, capstacktop);
-      *capsize = 2 * (*captop + commitcaptop);
+      capture = growcap(L, capture, capsize, *captop + commitcaptop, 0, ptop);
     }
     memcpy(capture + *captop, commitcapture, commitcaptop * sizeof(Capture));
     *captop += commitcaptop;
@@ -323,10 +371,11 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
   capstack->capsize = capsize;
   for (;;) {
 #if defined(DEBUG)
-      printf("s: |%s| stck:%d, dyncaps:%d, caps:%d  ",
-             s, stack - getstackbase(L, ptop), ndyncap, captop);
-      printinst(op, p);
+      printf("-------------------------------------\n");
       printcaplist(capture, capture + captop);
+      printf("s: |%s| stck:%d, dyncaps:%d, caps:%d  ",
+             s, (int)(stack - getstackbase(L, ptop)), ndyncap, captop);
+      printinst(op, p);
 #endif
     assert(dyncaplistidx(ptop) + ndyncap == lua_gettop(L) && ndyncap <= captop);
     switch ((Opcode)p->i.code) {
@@ -357,7 +406,7 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
             lua_gettable(L, lambdaidx(ptop));
             lua_pushinteger(L,(stack - 1)->X == (char*)LRFAIL ? LRFAIL : (stack - 1)->X - o);
             lua_setfield(L,-2,"X");
-            putcapturestolambda (L, ndyncap, captop, capstacktop, ptop);
+            putcapturestolambda (L, ndyncap, captop, ptop);
             lua_pop(L,1);
             if (ndyncap > 0)
               lua_pop(L, ndyncap);
@@ -382,7 +431,7 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
            capture = getcapturesfromstack (L, ndyncap, newdyncap, capstacktop, ptop);
            ndyncap = newdyncap;
            lambdaindex = (stack->pA - op) * maxpointer + (stack->s - o);
-           capture = addcapturesfromlambda (L, lambdaindex, capture, &ndyncap, &captop, &capsize, capstacktop, ptop);
+           capture = addcapturesfromlambda (L, lambdaindex, capture, &ndyncap, &captop, &capsize, ptop);
            clearlambdaitem (L, lambdaindex, ptop);
          }
         }
@@ -391,6 +440,17 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
       case IAny: {
         if (s < e) { p++; s++; }
         else goto fail;
+        continue;
+      }
+      case IUTFR: {
+        int codepoint;
+        if (s >= e)
+          goto fail;
+        s = utf8_decode (s, &codepoint);
+        if (s && p[1].offset <= codepoint && codepoint <= utf_to(p))
+          p += 2;
+        else
+          goto fail;
         continue;
       }
       case ITestAny: {
@@ -507,7 +567,7 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
             goto fail;
            else // rule  lvar.4
             {
-             capture = addcapturesfromlambda (L, lambdaindex, capture, &ndyncap, &captop, &capsize, capstacktop, ptop);
+             capture = addcapturesfromlambda (L, lambdaindex, capture, &ndyncap, &captop, &capsize, ptop);
              p += 2;
              s = o + X_X;
             }
@@ -538,7 +598,7 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
       case IFailTwice:
         assert(stack > getstackbase(L, ptop));
         stack--;
-        /* go through */
+        /* FALLTHROUGH */
       case IFail:
       fail: { /* pattern failed: try to backtrack */
         const char* X;
@@ -562,6 +622,9 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
         if (ndyncap > 0)  /* is there matchtime captures? */
           ndyncap -= removedyncap(L, capture, stack->caplevel, captop);
         p = stack->p;
+#if defined(DEBUG)
+        printf("**FAIL**\n");
+#endif
         if (X) // rule inc.2
         {
          int lambdaindex;
@@ -574,7 +637,7 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
          capture = getcapturesfromstack (L, ndyncap, newdyncap, capstacktop, ptop);
          ndyncap = newdyncap;
          lambdaindex = (stack->pA - op) * maxpointer + (stack->s - o);
-         capture = addcapturesfromlambda (L, lambdaindex, capture, &ndyncap, &captop, &capsize, capstacktop, ptop);
+         capture = addcapturesfromlambda (L, lambdaindex, capture, &ndyncap, &captop, &capsize, ptop);
          clearlambdaitem (L, lambdaindex, ptop);
         }
         else
@@ -585,23 +648,27 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
         CapState cs;
         int rem, res, n;
         int fr = lua_gettop(L) + 1;  /* stack index of first result */
-        cs.s = o; cs.L = L; cs.ocap = capture; cs.ptop = ptop;
+        cs.reclevel = 0; cs.L = L;
+        cs.s = o; cs.ocap = capture; cs.ptop = ptop;
         n = runtimecap(&cs, capture + captop, s, &rem);  /* call function */
         captop -= n;  /* remove nested captures */
+        ndyncap -= rem;  /* update number of dynamic captures */
         fr -= rem;  /* 'rem' items were popped from Lua stack */
         res = resdyncaptures(L, fr, s - o, e - o);  /* get result */
         if (res == -1)  /* fail? */
           goto fail;
         s = o + res;  /* else update current position */
         n = lua_gettop(L) - fr + 1;  /* number of new captures */
-        ndyncap += n - rem;  /* update number of dynamic captures */
-        if (n > 0) {  /* any new capture? */
-          if ((captop += n + 2) >= capsize) {
-            capture = doublecap(L, capture, captop, ptop, capstacktop);
-            capsize = 2 * captop;
-          }
-          /* add new captures to 'capture' list */
-          adddyncaptures(s, capture + captop - n - 2, n, fr);
+        ndyncap += n;  /* update number of dynamic captures */
+        if (n == 0)  /* no new captures? */
+          captop--;  /* remove open group */
+        else {  /* new captures; keep original open group */
+          if (fr + n >= SHRT_MAX)
+            luaL_error(L, "too many results in match-time capture");
+          /* add new captures + close group to 'capture' list */
+          capture = growcap(L, capture, &capsize, captop, n + 1, ptop);
+          adddyncaptures(s, capture + captop, n, fr);
+          captop += n + 1;  /* new captures + close group */
         }
         p++;
         continue;
@@ -633,10 +700,8 @@ const char *match (lua_State *L, const char *o, const char *s, const char *e,
       pushcapture: {
         capture[captop].idx = p->i.key;
         capture[captop].kind = getkind(p);
-        if (++captop >= capsize) {
-          capture = doublecap(L, capture, captop, ptop, capstacktop);
-          capsize = 2 * captop;
-        }
+        captop++;
+        capture = growcap(L, capture, &capsize, captop, 0, ptop);
         p++;
         continue;
       }
